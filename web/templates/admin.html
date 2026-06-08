@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}管理后台 · Veridrop{% endblock %}
+{% block description %}Veridrop 管理后台{% endblock %}
+{% block content %}
+<section class="admin-head">
+  <div>
+    <h1>管理后台</h1>
+    <p class="muted">当前登录: <code>{{ admin.username }}</code></p>
+  </div>
+  <form method="post" action="/logout">
+    <button class="btn" type="submit">退出登录</button>
+  </form>
+</section>
+
+<section class="metrics-row">
+  <div class="metric">
+    <div class="metric-label">存储后端</div>
+    <div class="metric-value">{{ storage_backend }}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">数据库</div>
+    <div class="metric-value">{{ database_name or '-' }}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">报告数</div>
+    <div class="metric-value">{{ summary.total_reports }}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">中转站数</div>
+    <div class="metric-value">{{ relay_count }}</div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>持久化状态</h2>
+  <p class="muted">
+    检测报告已通过 MongoDB 持久化；分享链接会从数据库读取报告内容。
+    报告图片仍使用本地缓存，可由报告 JSON 重新生成。
+  </p>
+</section>
+
+<section class="card admin-token-card">
+  <div class="admin-card-head">
+    <div>
+      <h2>系统 API Token</h2>
+      <p class="muted">
+        外部程序可用这个 token 调用 `/api/*`，不需要浏览器登录 Session。
+      </p>
+    </div>
+    <form method="post" action="/admin/api-token/reset">
+      <button class="btn btn-primary" type="submit">
+        {% if api_token %}重置 Token{% else %}创建 Token{% endif %}
+      </button>
+    </form>
+  </div>
+
+  {% if new_api_token %}
+    <div class="token-once">
+      <div class="token-once-label">请立即保存，离开本页后不会再次显示明文。</div>
+      <code>{{ new_api_token }}</code>
+    </div>
+  {% endif %}
+
+  <div class="token-meta">
+    <div>
+      <span class="metric-label">状态</span>
+      <strong>{% if api_token %}已创建{% else %}未创建{% endif %}</strong>
+    </div>
+    <div>
+      <span class="metric-label">前缀</span>
+      <code>{{ api_token.token_prefix if api_token else '-' }}</code>
+    </div>
+    <div>
+      <span class="metric-label">更新时间</span>
+      <span>{{ api_token.updated_at if api_token else '-' }}</span>
+    </div>
+  </div>
+
+  <pre class="token-example"><code>curl -H "Authorization: Bearer &lt;token&gt;" http://localhost:8000/api/status/&lt;job_id&gt;</code></pre>
+</section>
+{% endblock %}

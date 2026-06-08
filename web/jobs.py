@@ -34,15 +34,17 @@ from relay_detector.scorer import (
     summary_text,
 )
 
+from . import mongo_store
+
 
 JobStatus = Literal["queued", "running", "done", "error"]
 
-# Production default; override via VERIDROP_JOBS_DIR in tests / dev so the
-# import doesn't try to mkdir into /opt/veridrop on a developer laptop.
-JOBS_DIR = Path(
-    os.environ.get("VERIDROP_JOBS_DIR", "/opt/veridrop/web_data/jobs")
+# JSON reports are persisted in MongoDB. JPG report images remain a disposable
+# on-disk cache because they can be regenerated from the MongoDB report.
+IMAGE_CACHE_DIR = Path(
+    os.environ.get("VERIDROP_IMAGE_CACHE_DIR", "/opt/veridrop/web_data/images")
 )
-JOBS_DIR.mkdir(parents=True, exist_ok=True)
+IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Cap concurrent detections so a flood of submissions doesn't exhaust file
 # descriptors or get the upstream Anthropic API rate-limited. Each detection
@@ -116,20 +118,12 @@ async def submit(
 
 
 async def get(job_id: str) -> Job | None:
-    """Look up a job by id. Falls back to disk for jobs that survived a restart."""
+    """Look up a job by id. Falls back to MongoDB after process restarts."""
     async with _LOCK:
         j = _JOBS.get(job_id)
     if j is not None:
         return j
-    report = None
-    for path in _report_candidates(job_id):
-        if not path.exists():
-            continue
-        try:
-            report = json.loads(path.read_text(encoding="utf-8"))
-            break
-        except (json.JSONDecodeError, OSError):
-            continue
+    report = mongo_store.get_report(job_id)
     if report is None:
         return None
     return Job(
@@ -145,25 +139,14 @@ async def get(job_id: str) -> Job | None:
     )
 
 
-def report_path(job_id: str, protocol: str) -> Path:
-    protocol_dir = JOBS_DIR / protocol
-    protocol_dir.mkdir(parents=True, exist_ok=True)
-    return protocol_dir / f"{job_id}.json"
+def save_report(job_id: str, protocol: str, report: dict[str, Any]) -> None:
+    mongo_store.save_report(job_id, protocol, report)
 
 
 def image_path(job_id: str, protocol: str) -> Path:
-    protocol_dir = JOBS_DIR / protocol
+    protocol_dir = IMAGE_CACHE_DIR / protocol
     protocol_dir.mkdir(parents=True, exist_ok=True)
     return protocol_dir / f"{job_id}.jpg"
-
-
-def _report_candidates(job_id: str) -> list[Path]:
-    return [
-        JOBS_DIR / f"{job_id}.json",
-        JOBS_DIR / "anthropic" / f"{job_id}.json",
-        JOBS_DIR / "openai" / f"{job_id}.json",
-        JOBS_DIR / "gemini" / f"{job_id}.json",
-    ]
 
 
 async def _run(
@@ -269,10 +252,7 @@ async def _run(
                 detected_non_anthropic_brands=brands,
             )
             report_dict = json.loads(report.model_dump_json())
-            report_path(job_id, protocol).write_text(
-                json.dumps(report_dict, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            save_report(job_id, protocol, report_dict)
 
             async with _LOCK:
                 if job_id in _JOBS:

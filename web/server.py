@@ -7,8 +7,10 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi import Response as FastAPIResponse
@@ -17,8 +19,9 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
-from . import jobs, leaderboard
+from . import auth, jobs, leaderboard, mongo_store
 from .faq_data import FAQ_CATEGORIES, faqpage_jsonld, total_question_count
 from .image_report import render_report_jpg
 from .probe import probe_model_alive, probe_relay
@@ -32,9 +35,28 @@ STATIC_DIR = HERE / "static"
 logger = logging.getLogger("veridrop")
 logger.setLevel(logging.INFO)
 
-app = FastAPI(title="Veridrop", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mongo_store.init_store()
+    result = auth.ensure_initial_admin()
+    if result.created:
+        logger.info("Created initial admin user: %s", result.username)
+    yield
+    mongo_store.close_store()
+
+
+app = FastAPI(title="Veridrop", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+def _template_auth_context(request: Request) -> dict[str, object]:
+    return {"current_admin": auth.current_admin(request)}
+
+
+templates = Jinja2Templates(
+    directory=str(TEMPLATE_DIR),
+    context_processors=[_template_auth_context],
+)
 
 
 @app.middleware("http")
@@ -56,12 +78,78 @@ async def no_html_cache(request: Request, call_next):
     return response
 
 
+_PUBLIC_AUTH_PATHS = {
+    "/healthz",
+    "/login",
+}
+_PUBLIC_AUTH_PREFIXES = (
+    "/static/",
+)
+
+
+def _login_required_enabled() -> bool:
+    return os.environ.get("VERIDROP_REQUIRE_LOGIN", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _is_public_auth_path(path: str) -> bool:
+    return path in _PUBLIC_AUTH_PATHS or any(
+        path.startswith(prefix) for prefix in _PUBLIC_AUTH_PREFIXES
+    )
+
+
+def _request_next_path(request: Request) -> str:
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    return path
+
+
+@app.middleware("http")
+async def require_admin_login(request: Request, call_next):
+    if (
+        not _login_required_enabled()
+        or request.method == "OPTIONS"
+        or _is_public_auth_path(request.url.path)
+    ):
+        return await call_next(request)
+
+    if auth.current_admin(request) is not None:
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/") and auth.has_valid_api_token(request):
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "admin login required"}, status_code=401)
+
+    return RedirectResponse(
+        f"/login?{urlencode({'next': _request_next_path(request)})}",
+        status_code=303,
+    )
+
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=auth.session_secret(),
+    same_site="lax",
+    https_only=os.environ.get("VERIDROP_SESSION_HTTPS_ONLY", "0") in {"1", "true", "yes"},
+)
+
+
 _VALID_MODES = {"quick", "standard", "full"}
 _VALID_WISHLIST_PROTOCOLS = {"openai", "gemini"}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 WISHLIST_PATH = Path(
     os.environ.get("VERIDROP_WISHLIST_PATH", "/opt/veridrop/web_data/wishlist.txt")
 )
+
+
+def _safe_next(next_path: str) -> str:
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        return "/admin"
+    return next_path
 
 
 def _protocol_from_model(model: str) -> str:
@@ -107,6 +195,75 @@ def _gemini_model_choices() -> list[dict[str, str]]:
 @app.get("/", response_class=HTMLResponse)
 async def hub(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "hub.html")
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/admin") -> HTMLResponse:
+    if auth.current_admin(request) is not None:
+        return RedirectResponse(_safe_next(next), status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"next": _safe_next(next), "error": ""},
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/admin"),
+):
+    next_path = _safe_next(next)
+    if auth.authenticate(username.strip(), password):
+        auth.login_session(request, username.strip())
+        return RedirectResponse(next_path, status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"next": next_path, "error": "用户名或密码不正确。"},
+        status_code=401,
+    )
+
+
+@app.post("/logout")
+async def logout(request: Request) -> RedirectResponse:
+    auth.logout_session(request)
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    redirect = auth.redirect_if_not_admin(request, "/admin")
+    if redirect is not None:
+        return redirect
+    admin = auth.current_admin(request) or {}
+    relays, summary = leaderboard.aggregate()
+    token_doc = mongo_store.get_system_api_token()
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        {
+            "admin": admin,
+            "summary": summary,
+            "storage_backend": mongo_store.storage_backend(),
+            "database_name": mongo_store.load_settings().database_name,
+            "relay_count": len(relays),
+            "api_token": token_doc,
+            "new_api_token": request.session.pop("new_api_token", None),
+        },
+    )
+
+
+@app.post("/admin/api-token/reset")
+async def reset_api_token(request: Request) -> RedirectResponse:
+    admin = auth.current_admin(request)
+    if admin is None:
+        return RedirectResponse("/login?next=/admin", status_code=303)
+    token, _doc = auth.reset_system_api_token(str(admin.get("username") or "admin"))
+    request.session["new_api_token"] = token
+    return RedirectResponse("/admin", status_code=303)
 
 
 @app.get("/claude", response_class=HTMLResponse)
@@ -678,14 +835,6 @@ _STATIC_SITEMAP_URLS = [
     ("https://veridrop.org/faq",         "monthly", "0.8",  "faq.html"),
 ]
 
-_SITEMAP_REPORT_DIRS = [
-    Path("/opt/veridrop/web_data/jobs/anthropic"),
-    Path("/opt/veridrop/web_data/jobs/openai"),
-    Path("/opt/veridrop/web_data/jobs/gemini"),
-    Path("/opt/veridrop/web_data/jobs"),  # legacy top-level
-]
-
-
 def _template_lastmod(filename: str) -> str:
     """Date string from a template's mtime, or '' if missing/unreadable."""
     try:
@@ -729,26 +878,16 @@ async def sitemap_xml() -> Response:
         lines.append(line)
 
     seen: set[str] = set()
-    for dir_path in _SITEMAP_REPORT_DIRS:
-        if not dir_path.is_dir():
+    for job_id, _report, ts in leaderboard._iter_reports():  # noqa: SLF001
+        if job_id in seen:
             continue
-        for json_path in sorted(dir_path.glob("*.json")):
-            job_id = json_path.stem
-            if job_id in seen:
-                continue
-            seen.add(job_id)
-            try:
-                lastmod = datetime.fromtimestamp(
-                    json_path.stat().st_mtime, tz=timezone.utc
-                ).strftime("%Y-%m-%d")
-            except OSError:
-                continue
-            lines.append(
-                f"  <url><loc>https://veridrop.org/r/{job_id}</loc>"
-                f"<lastmod>{lastmod}</lastmod>"
-                f"<changefreq>monthly</changefreq>"
-                f"<priority>0.6</priority></url>"
-            )
+        seen.add(job_id)
+        lastmod = ts.strftime("%Y-%m-%d") if ts else ""
+        line = f"  <url><loc>https://veridrop.org/r/{job_id}</loc>"
+        if lastmod:
+            line += f"<lastmod>{lastmod}</lastmod>"
+        line += "<changefreq>monthly</changefreq><priority>0.6</priority></url>"
+        lines.append(line)
 
     # Per-domain detail pages — primary long-tail SEO surface. lastmod is
     # the relay's most recent report so Google revisits whenever new data

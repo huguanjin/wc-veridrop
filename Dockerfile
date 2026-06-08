@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    VERIDROP_JOBS_DIR=/opt/veridrop/web_data/jobs \
+    VERIDROP_IMAGE_CACHE_DIR=/opt/veridrop/web_data/images \
+    VERIDROP_MONGODB_CONFIG=/opt/veridrop/mongodb_config.yaml \
     VERIDROP_WISHLIST_PATH=/opt/veridrop/web_data/wishlist.txt
 
 WORKDIR /opt/veridrop
@@ -12,13 +13,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md LICENSE ./
+COPY mongodb_config.example.yaml ./mongodb_config.yaml
 COPY src ./src
 COPY web ./web
 COPY data ./data
 
 RUN python -m pip install --upgrade pip \
     && pip install -e ".[web]" \
-    && mkdir -p /opt/veridrop/web_data/jobs \
+    && mkdir -p /opt/veridrop/web_data/images \
     && useradd --create-home --shell /usr/sbin/nologin veridrop \
     && chown -R veridrop:veridrop /opt/veridrop
 

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from . import mongo_store
+
 
 REPORT_DIRS = [
     Path("/opt/veridrop/web_data/jobs/anthropic"),
@@ -191,15 +193,12 @@ def _load_report(path: Path) -> dict | None:
         return None
 
 
-def aggregate() -> tuple[list[RelayStats], dict[str, int]]:
-    """Scan all report JSONs, return (sorted relay stats, summary metrics).
-
-    Sort:
-      1. Ranked relays (≥ 2 detections) first, by overall_median desc
-      2. Single-sample relays at the bottom, by last_checked desc (recency)
-    """
-    by_domain: dict[str, RelayStats] = defaultdict(lambda: RelayStats(domain=""))
-    total_reports = 0
+def _iter_reports(domain: str | None = None):
+    """Yield (job_id, report, timestamp) from MongoDB or legacy JSON files."""
+    if mongo_store.using_mongo():
+        for stored in mongo_store.iter_reports(domain=domain):
+            yield stored.job_id, stored.report, stored.timestamp
+        return
 
     for dir_path in REPORT_DIRS:
         if not dir_path.is_dir():
@@ -208,60 +207,67 @@ def aggregate() -> tuple[list[RelayStats], dict[str, int]]:
             report = _load_report(json_path)
             if not report:
                 continue
-            domain = _extract_domain(report.get("base_url", ""))
-            if not domain:
+            if domain and _extract_domain(report.get("base_url", "")) != domain:
                 continue
-            if domain in _BLOCKED_DOMAINS:
-                continue
-            total_reports += 1
-            protocol = str(report.get("protocol") or "anthropic")
-            score = float(report.get("total_score") or 0)
-            verdict = str(report.get("verdict") or "failed")
             ts = _parse_timestamp(report.get("timestamp"))
-            job_id = json_path.stem
-
-            relay = by_domain[domain]
-            relay.domain = domain
-            ps = relay.by_protocol.setdefault(protocol, ProtocolStats(protocol=protocol))
-            ps.count += 1
-            ps.scores.append(score)
-            for r in report.get("results") or []:
-                if isinstance(r, dict) and r.get("status") == "fail":
-                    name = r.get("name")
-                    if isinstance(name, str):
-                        ps.failed_detectors[name] += 1
-            # Track most recent — by timestamp if available, else by file mtime
-            if ts and (ps.last_checked is None or ts > ps.last_checked):
-                ps.last_checked = ts
-                ps.last_job_id = job_id
-                ps.last_score = score
-                ps.last_verdict = verdict
-            elif ps.last_checked is None:
-                ps.last_job_id = job_id
-                ps.last_score = score
-                ps.last_verdict = verdict
+            if ts is None:
                 try:
-                    mtime = datetime.fromtimestamp(json_path.stat().st_mtime, tz=timezone.utc)
-                    ps.last_checked = mtime
+                    ts = datetime.fromtimestamp(json_path.stat().st_mtime, tz=timezone.utc)
                 except OSError:
                     pass
+            yield json_path.stem, report, ts
 
-    relays = list(by_domain.values())
-    # Sort by Bayesian-weighted ranking score (descending), then by
-    # is_ranked (≥2 samples first — single-sample relays sink to the
-    # bottom no matter how high their fluke score), then recency tiebreak.
+
+def _sort_relays(relays: list[RelayStats]) -> list[RelayStats]:
     relays.sort(key=lambda r: (
-        not r.is_ranked,                  # ranked relays float to the top
-        -r.ranking_score,                 # then by Bayesian-weighted score
+        not r.is_ranked,
+        -r.ranking_score,
         -(r.last_checked.timestamp() if r.last_checked else 0),
     ))
+    return relays
 
-    summary = {
+
+def aggregate() -> tuple[list[RelayStats], dict[str, int]]:
+    """Return sorted relay stats from the active report store."""
+    by_domain: dict[str, RelayStats] = defaultdict(lambda: RelayStats(domain=""))
+    total_reports = 0
+
+    for job_id, report, ts in _iter_reports():
+        domain = _extract_domain(report.get("base_url", ""))
+        if not domain or domain in _BLOCKED_DOMAINS:
+            continue
+        total_reports += 1
+        protocol = str(report.get("protocol") or "anthropic")
+        score = float(report.get("total_score") or 0)
+        verdict = str(report.get("verdict") or "failed")
+
+        relay = by_domain[domain]
+        relay.domain = domain
+        ps = relay.by_protocol.setdefault(protocol, ProtocolStats(protocol=protocol))
+        ps.count += 1
+        ps.scores.append(score)
+        for r in report.get("results") or []:
+            if isinstance(r, dict) and r.get("status") == "fail":
+                name = r.get("name")
+                if isinstance(name, str):
+                    ps.failed_detectors[name] += 1
+        if ts and (ps.last_checked is None or ts > ps.last_checked):
+            ps.last_checked = ts
+            ps.last_job_id = job_id
+            ps.last_score = score
+            ps.last_verdict = verdict
+        elif ps.last_checked is None:
+            ps.last_checked = ts
+            ps.last_job_id = job_id
+            ps.last_score = score
+            ps.last_verdict = verdict
+
+    relays = _sort_relays(list(by_domain.values()))
+    return relays, {
         "total_reports": total_reports,
         "total_relays": len(relays),
         "ranked_relays": sum(1 for r in relays if r.is_ranked),
     }
-    return relays, summary
 
 
 @dataclass
@@ -288,14 +294,7 @@ class JobEntry:
 
 
 def aggregate_one(domain: str) -> tuple[RelayStats, list[JobEntry]] | None:
-    """Build the per-domain detail view: stats + full job history.
-
-    Returns None if no reports exist for this domain. Otherwise returns
-    (stats, jobs) where jobs is sorted newest-first.
-
-    This re-scans all report files filtered to the requested domain. At our
-    scale (<10k reports) the cost is negligible; at 100k+ we'd add an index.
-    """
+    """Build the per-domain detail view: stats + full job history."""
     domain = domain.strip().lower()
     if not is_valid_domain(domain):
         return None
@@ -305,66 +304,50 @@ def aggregate_one(domain: str) -> tuple[RelayStats, list[JobEntry]] | None:
     relay = RelayStats(domain=domain)
     history: list[JobEntry] = []
 
-    for dir_path in REPORT_DIRS:
-        if not dir_path.is_dir():
-            continue
-        for json_path in dir_path.glob("*.json"):
-            report = _load_report(json_path)
-            if not report:
-                continue
-            if _extract_domain(report.get("base_url", "")) != domain:
-                continue
+    for job_id, report, ts in _iter_reports(domain=domain):
+        protocol = str(report.get("protocol") or "anthropic")
+        score = float(report.get("total_score") or 0)
+        verdict = str(report.get("verdict") or "failed")
+        model = str(report.get("target_model") or "")
 
-            protocol = str(report.get("protocol") or "anthropic")
-            score = float(report.get("total_score") or 0)
-            verdict = str(report.get("verdict") or "failed")
-            ts = _parse_timestamp(report.get("timestamp"))
-            if ts is None:
-                try:
-                    ts = datetime.fromtimestamp(json_path.stat().st_mtime, tz=timezone.utc)
-                except OSError:
-                    pass
-            job_id = json_path.stem
-            model = str(report.get("target_model") or "")
+        results = report.get("results") or []
+        failed_count = sum(
+            1 for r in results
+            if isinstance(r, dict) and r.get("status") == "fail"
+        )
 
-            results = report.get("results") or []
-            failed_count = sum(
-                1 for r in results
-                if isinstance(r, dict) and r.get("status") == "fail"
-            )
+        ps = relay.by_protocol.setdefault(protocol, ProtocolStats(protocol=protocol))
+        ps.count += 1
+        ps.scores.append(score)
+        for r in results:
+            if isinstance(r, dict) and r.get("status") == "fail":
+                name = r.get("name")
+                if isinstance(name, str):
+                    ps.failed_detectors[name] += 1
+        if ts and (ps.last_checked is None or ts > ps.last_checked):
+            ps.last_checked = ts
+            ps.last_job_id = job_id
+            ps.last_score = score
+            ps.last_verdict = verdict
+        elif ps.last_checked is None:
+            ps.last_checked = ts
+            ps.last_job_id = job_id
+            ps.last_score = score
+            ps.last_verdict = verdict
 
-            ps = relay.by_protocol.setdefault(protocol, ProtocolStats(protocol=protocol))
-            ps.count += 1
-            ps.scores.append(score)
-            for r in results:
-                if isinstance(r, dict) and r.get("status") == "fail":
-                    name = r.get("name")
-                    if isinstance(name, str):
-                        ps.failed_detectors[name] += 1
-            if ts and (ps.last_checked is None or ts > ps.last_checked):
-                ps.last_checked = ts
-                ps.last_job_id = job_id
-                ps.last_score = score
-                ps.last_verdict = verdict
-            elif ps.last_checked is None:
-                ps.last_job_id = job_id
-                ps.last_score = score
-                ps.last_verdict = verdict
-
-            history.append(JobEntry(
-                job_id=job_id,
-                protocol=protocol,
-                model=model,
-                score=score,
-                verdict=verdict,
-                timestamp=ts,
-                failed_count=failed_count,
-            ))
+        history.append(JobEntry(
+            job_id=job_id,
+            protocol=protocol,
+            model=model,
+            score=score,
+            verdict=verdict,
+            timestamp=ts,
+            failed_count=failed_count,
+        ))
 
     if not history:
         return None
 
-    # Newest first; tie-break on job_id for deterministic ordering.
     history.sort(
         key=lambda j: (j.timestamp.timestamp() if j.timestamp else 0, j.job_id),
         reverse=True,

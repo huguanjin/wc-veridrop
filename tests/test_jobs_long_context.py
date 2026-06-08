@@ -15,10 +15,10 @@ from web import jobs
 
 @pytest.fixture
 def isolated_jobs_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Avoid touching real /opt/veridrop/web_data/jobs during tests."""
+    """Avoid touching real /opt/veridrop/web_data/images during tests."""
     fake_dir = tmp_path / "jobs"
     fake_dir.mkdir()
-    monkeypatch.setattr(jobs, "JOBS_DIR", fake_dir)
+    monkeypatch.setattr(jobs, "IMAGE_CACHE_DIR", fake_dir)
     # Reset the shared state that survives across tests.
     monkeypatch.setattr(jobs, "_JOBS", {})
     return fake_dir
@@ -51,8 +51,7 @@ async def test_long_context_flag_default_false(
         return await _capture_cfg(captured, *args)
 
     monkeypatch.setattr(jobs, "_run_anthropic", fake_anthropic)
-    # Avoid file I/O for the report write step
-    monkeypatch.setattr(jobs, "report_path", lambda *a, **k: isolated_jobs_dir / "x.json")
+    monkeypatch.setattr(jobs, "save_report", lambda *a, **k: None)
 
     job_id = await jobs.submit(
         "https://relay.example",
@@ -84,7 +83,7 @@ async def test_long_context_flag_true_propagates(
         return await _capture_cfg(captured, *args)
 
     monkeypatch.setattr(jobs, "_run_openai", fake_openai)
-    monkeypatch.setattr(jobs, "report_path", lambda *a, **k: isolated_jobs_dir / "x.json")
+    monkeypatch.setattr(jobs, "save_report", lambda *a, **k: None)
 
     job_id = await jobs.submit(
         "https://relay.example",

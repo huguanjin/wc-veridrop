@@ -1,0 +1,46 @@
+services:
+  app:
+    build: .
+    container_name: veridrop-app
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Docker Compose deploys MongoDB as the "mongo" service, so this must
+      # override mongodb_config.yaml's localhost-oriented development URI.
+      VERIDROP_MONGODB_URI: "mongodb://mongo:27017/"
+      VERIDROP_MONGODB_DATABASE: "${VERIDROP_MONGODB_DATABASE:-WcVeridrop}"
+      VERIDROP_MONGODB_CONFIG: "/opt/veridrop/mongodb_config.yaml"
+      VERIDROP_IMAGE_CACHE_DIR: "/opt/veridrop/web_data/images"
+      VERIDROP_WISHLIST_PATH: "/opt/veridrop/web_data/wishlist.txt"
+      VERIDROP_REQUIRE_LOGIN: "${VERIDROP_REQUIRE_LOGIN:-1}"
+      # Set this in a local .env file before production use.
+      VERIDROP_SESSION_SECRET: "${VERIDROP_SESSION_SECRET:-dev-compose-session-secret-change-me}"
+      # Used only if the admins collection is empty. Replace in .env.
+      VERIDROP_ADMIN_USERNAME: "${VERIDROP_ADMIN_USERNAME:-admin}"
+      VERIDROP_ADMIN_PASSWORD: "${VERIDROP_ADMIN_PASSWORD:-ChangeMe123!}"
+    volumes:
+      - veridrop_images:/opt/veridrop/web_data/images
+
+  mongo:
+    image: mongo:7
+    container_name: veridrop-mongo
+    restart: unless-stopped
+    ports:
+      # Optional: exposes MongoDB to the host for Compass/mongosh.
+      - "27018:27017"
+    volumes:
+      - veridrop_mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  veridrop_mongo:
+  veridrop_images:

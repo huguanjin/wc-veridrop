@@ -6,6 +6,13 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/veridrop
 Environment=PYTHONUNBUFFERED=1
+Environment=VERIDROP_MONGODB_CONFIG=/opt/veridrop/mongodb_config.yaml
+Environment=VERIDROP_IMAGE_CACHE_DIR=/opt/veridrop/web_data/images
+Environment=VERIDROP_REQUIRE_LOGIN=1
+# Set these in an EnvironmentFile or systemd drop-in for production:
+# Environment=VERIDROP_SESSION_SECRET=replace-with-a-random-secret
+# Environment=VERIDROP_MONGODB_URI=mongodb://localhost:27018/
+# Environment=VERIDROP_MONGODB_DATABASE=WcVeridrop
 ExecStart=/opt/veridrop/venv/bin/python -m uvicorn web.server:app \
   --host 127.0.0.1 --port 8765 \
   --workers 1 \

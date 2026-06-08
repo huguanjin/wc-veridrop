@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}管理员登录 · Veridrop{% endblock %}
+{% block description %}Veridrop 管理员登录{% endblock %}
+{% block content %}
+<section class="auth-layout">
+  <div class="auth-panel">
+    <h1>管理员登录</h1>
+    <form method="post" action="/login" class="auth-form">
+      <input type="hidden" name="next" value="{{ next }}" />
+      <div class="field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+      </div>
+      <button class="btn btn-primary" type="submit">登录</button>
+      {% if error %}
+        <p class="form-error">{{ error }}</p>
+      {% endif %}
+    </form>
+  </div>
+</section>
+{% endblock %}

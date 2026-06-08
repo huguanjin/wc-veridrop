@@ -1,0 +1,31 @@
+# MongoDB configuration example for Veridrop.
+#
+# Copy this file to mongodb_config.yaml for local non-Docker runs:
+#
+#   cp mongodb_config.example.yaml mongodb_config.yaml
+#
+# Docker Compose users can set the MongoDB connection in docker-compose.yml or
+# a local .env file; the app also supports the environment variables listed
+# below.
+
+mongodb:
+  # Local host run example:
+  #   mongodb://localhost:27018/
+  #
+  # Docker Compose internal network example:
+  #   mongodb://mongo:27017/
+  #
+  # MongoDB Atlas example:
+  #   mongodb+srv://<username>:<password>@<cluster-host>/?retryWrites=true&w=majority&appName=Veridrop
+  connection_string: "mongodb://localhost:27018/"
+  database_name: "WcVeridrop"
+
+# Used only on first startup when the admins collection is empty.
+# For production, prefer environment variables and remove plaintext bootstrap
+# credentials after the account is created:
+#
+#   VERIDROP_ADMIN_USERNAME=admin
+#   VERIDROP_ADMIN_PASSWORD=<strong-random-password>
+admin:
+  initial_username: "admin"
+  initial_password: "ChangeMe123!"

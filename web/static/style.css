@@ -99,6 +99,23 @@ code {
 }
 .site-nav a:hover::after,
 .site-nav a:focus-visible::after { transform: scaleX(1); }
+.nav-logout {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.nav-logout button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.nav-logout button:hover {
+  color: var(--text);
+}
 
 /* GitHub button in nav — pill-shaped chip with the official mark + label.
  * Stronger visual weight than text links so it reads as "primary external
@@ -1181,6 +1198,94 @@ code {
 .form-error-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 .form-error-actions .btn { font-size: 13px; padding: 7px 14px; }
 
+/* auth / admin */
+.auth-layout {
+  min-height: 56vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-panel {
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 32px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+.auth-panel h1 {
+  margin: 0 0 22px;
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+.auth-form { margin: 0; }
+.admin-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.admin-head h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+.admin-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.admin-card-head h2 { margin: 0 0 6px; }
+.admin-card-head form { margin: 0; flex-shrink: 0; }
+.admin-card-head .btn-primary { width: auto; }
+.token-once {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 16px 0;
+}
+.token-once-label {
+  color: #065f46;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.token-once code,
+.token-example code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.token-meta {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+.token-meta > div {
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.token-meta .metric-label {
+  display: block;
+  margin-bottom: 6px;
+}
+.token-example {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
 /* features */
 .features {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
@@ -1555,6 +1660,18 @@ code {
   }
   .site-nav a:last-child { border-bottom: none; }
   .site-nav a:hover { background: var(--bg-soft); }
+  .nav-logout {
+    width: 100%;
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-logout button {
+    width: 100%;
+    text-align: left;
+    padding: 14px 20px;
+    color: var(--text);
+    font-size: 15px;
+  }
+  .nav-logout button:hover { background: var(--bg-soft); }
   /* Disable the underline animation in dropdown rows — it competes with
      the row-tap highlight and looks busy. */
   .site-nav a::after { display: none; }

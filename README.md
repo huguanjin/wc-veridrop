@@ -191,7 +191,7 @@ nano .env  # 填 ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / ANTHROPIC_MODEL
 
 ```bash
 ./venv/bin/uvicorn web.server:app --host 0.0.0.0 --port 8000
-# 浏览器访问 http://localhost:8000
+# 浏览器访问 http://localhost:8000，未登录会跳转到 /login
 ```
 
 线上版还提供:
