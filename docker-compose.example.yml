@@ -1,0 +1,50 @@
+# Copy this file to docker-compose.yml on your Docker node and fill in
+# production-only secrets before starting the service.
+
+services:
+  app:
+    build: .
+    image: wc-veridrop:latest
+    container_name: veridrop-app
+    restart: unless-stopped
+    ports:
+      # Run this compose file on the Docker node, for example 10.0.4.11.
+      # Use "10.0.4.11:8000:8000" if you only want to bind that private IP.
+      - "8000:8000"
+    environment:
+      # External MongoDB without username/password.
+      VERIDROP_MONGODB_URI: "mongodb://10.0.2.236:27017/"
+      VERIDROP_MONGODB_DATABASE: "WcVeridrop"
+      VERIDROP_MONGODB_CONFIG: "/opt/veridrop/mongodb_config.yaml"
+      VERIDROP_MONGODB_TIMEOUT_MS: "5000"
+
+      VERIDROP_IMAGE_CACHE_DIR: "/opt/veridrop/web_data/images"
+      VERIDROP_WISHLIST_PATH: "/opt/veridrop/web_data/wishlist.txt"
+      VERIDROP_REQUIRE_LOGIN: "1"
+      VERIDROP_SESSION_SECRET: "change-me-to-a-long-random-secret"
+
+      # Used only if the admins collection is empty on first startup.
+      VERIDROP_ADMIN_USERNAME: "admin"
+      VERIDROP_ADMIN_PASSWORD: "change-me-to-a-strong-password"
+
+      # Upstream model settings. Do not commit real API keys.
+      ANTHROPIC_BASE_URL: "https://api.anthropic.com"
+      ANTHROPIC_API_KEY: "sk-ant-..."
+      ANTHROPIC_MODEL: "claude-opus-4-7"
+    volumes:
+      - veridrop_images:/opt/veridrop/web_data/images
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  veridrop_images:
